@@ -1,3 +1,4 @@
+import os
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
@@ -8,27 +9,31 @@ from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.types import (
+    User,
+    Channel,
     UserStatusOnline,
     UserStatusOffline,
     UserStatusRecently,
     UserStatusLastWeek,
     UserStatusLastMonth,
-    Channel
 )
 
-# ================= CONFIG =================
-API_ID = 39826607
-API_HASH = "186e5c1ce0542f87a7a2f00f08ab3afb"
-STRING_SESSION = "1BVtsOIoBu5nWJ8oBntHKv-dSWD1v1f7YAdilnTqf0eRbcYUAGqkrtp5oHvzU0iA1bZJFX5jAXRv7M03I3o5Xa0w4k7OTVdRFV89FBc_4ZxRyECPVcSvuu-BNV5WryyENXgBq10b7Fl-6XfL0EmSJMf44M5vMQ01pf_KAUdRllYt9kzLW7ZU2q0-xYlLEK7OlCbHiiNwJI1bdBU2I9LYgC86-ybDbiD0LU14qSrdFR3BHhab5Nub7O-cZWdTv_zL3ExVTO6whFp2QuY0iS9zJsrlyOMh_KcvlFGL1PJDKn_tRpB33PpnL2yNjTlV0OU3NfK_ru39JRZOSkkI6wH8IAvVRtN67Uw4="
-API_KEY = "HEYBRO1"
-# =========================================
+# ============ ENV CONFIG ============
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+STRING_SESSION = os.getenv("STRING_SESSION")
+API_KEY = os.getenv("API_KEY")
+
+if not STRING_SESSION or not STRING_SESSION.startswith("1"):
+    raise RuntimeError("INVALID STRING_SESSION")
+# ===================================
 
 CACHE = {}
 CACHE_TTL = 300
 client = None
 
 
-# ================= LIFESPAN =================
+# ============ LIFESPAN ============
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client
@@ -39,150 +44,127 @@ async def lifespan(app: FastAPI):
     )
     await client.start()
     print("[+] Telethon connected")
-
     yield
-
     await client.disconnect()
     print("[-] Telethon disconnected")
 
 
 app = FastAPI(
     title="Telegram OSINT Ultimate API",
-    version="FINAL-RICH",
+    version="FINAL",
     lifespan=lifespan
 )
 
 
-# ================= HELPERS =================
+# ============ HELPERS ============
 def parse_status(user):
-    if isinstance(user.status, UserStatusOnline):
+    s = user.status
+    if isinstance(s, UserStatusOnline):
         return "online"
-    if isinstance(user.status, UserStatusOffline):
+    if isinstance(s, UserStatusOffline):
         return "offline"
-    if isinstance(user.status, UserStatusRecently):
+    if isinstance(s, UserStatusRecently):
         return "recently"
-    if isinstance(user.status, UserStatusLastWeek):
+    if isinstance(s, UserStatusLastWeek):
         return "last_week"
-    if isinstance(user.status, UserStatusLastMonth):
+    if isinstance(s, UserStatusLastMonth):
         return "last_month"
-    return "unknown"
+    return "hidden"
 
 
-# ================= CORE USER =================
-async def resolve_user(username: str):
-    # auto-fix wrong inputs like telegram=TTN5PANEL
-    username = username.split("=")[-1].lstrip("@").strip()
+# ============ RESOLVER ============
+async def resolve_target(q: str):
+    q = q.strip()
 
-    if username in CACHE:
-        ts, data = CACHE[username]
+    if q in CACHE:
+        ts, data = CACHE[q]
         if time.time() - ts < CACHE_TTL:
             return data
 
-    try:
-        r = await client(ResolveUsernameRequest(username))
-    except (UsernameInvalidError, UsernameNotOccupiedError):
-        raise HTTPException(404, "Username not found")
+    # --- chat_id case ---
+    if q.lstrip("-").isdigit():
+        entity = await client.get_entity(int(q))
+    else:
+        try:
+            r = await client(ResolveUsernameRequest(q.lstrip("@")))
+            if r.users:
+                entity = r.users[0]
+            elif r.chats:
+                entity = r.chats[0]
+            else:
+                raise HTTPException(404, "Not found")
+        except (UsernameInvalidError, UsernameNotOccupiedError):
+            raise HTTPException(404, "Username not found")
 
-    if not r.users:
-        raise HTTPException(404, "No user data")
+    # --- USER ---
+    if isinstance(entity, User):
+        full = await client(GetFullUserRequest(entity.id))
+        data = {
+            "type": "user",
+            "id": entity.id,
+            "username": entity.username,
+            "first_name": entity.first_name,
+            "last_name": entity.last_name,
+            "lang_code": entity.lang_code,
+            "bio": full.full_user.about if full.full_user else None,
+            "status": parse_status(entity),
+            "flags": {
+                "bot": bool(entity.bot),
+                "verified": bool(entity.verified),
+                "premium": bool(entity.premium),
+                "scam": bool(entity.scam),
+                "fake": bool(entity.fake),
+                "deleted": bool(entity.deleted),
+            }
+        }
 
-    user = r.users[0]
-    full = await client(GetFullUserRequest(user.id))
+    # --- CHANNEL / GROUP ---
+    elif isinstance(entity, Channel):
+        full = await client(GetFullChannelRequest(entity))
+        data = {
+            "type": "channel",
+            "id": entity.id,
+            "title": entity.title,
+            "username": entity.username,
+            "subscribers": full.full_chat.participants_count,
+            "online_count": full.full_chat.online_count,
+            "linked_chat_id": full.full_chat.linked_chat_id
+        }
 
-    profile_photo_cdn = (
-        f"https://t.me/i/userpic/320/{user.username}.jpg"
-        if user.username and user.photo else None
-    )
+    else:
+        raise HTTPException(404, "Unsupported entity")
 
-    data = {
-        "user_id": user.id,
-        "access_hash": user.access_hash,
-        "username": user.username,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "lang_code": user.lang_code,
-
-        "status": parse_status(user),
-        "bio": full.full_user.about if full.full_user else None,
-
-        "is_bot": bool(user.bot),
-        "is_verified": bool(user.verified),
-        "is_premium": bool(user.premium),
-        "is_scam": bool(user.scam),
-        "is_fake": bool(user.fake),
-        "is_deleted": bool(user.deleted),
-
-        "has_profile_photo": bool(user.photo),
-        "profile_photo_cdn": profile_photo_cdn,
-        "dc_id": user.photo.dc_id if user.photo else None,
-    }
-
-    CACHE[username] = (time.time(), data)
+    CACHE[q] = (time.time(), data)
     return data
 
 
-# ================= CHANNEL STATS =================
-async def channel_stats(username: str):
-    try:
-        entity = await client.get_entity(username)
-    except Exception:
-        return None
-
-    if not isinstance(entity, Channel):
-        return None
-
-    full = await client(GetFullChannelRequest(entity))
-
-    return {
-        "channel_id": entity.id,
-        "title": entity.title,
-        "username": entity.username,
-        "subscribers": full.full_chat.participants_count,
-        "online_count": full.full_chat.online_count,
-        "linked_chat_id": full.full_chat.linked_chat_id
-    }
-
-
-# ================= API =================
+# ============ API ============
 @app.get("/")
 async def root():
     return {
         "service": "Telegram OSINT Ultimate API",
-        "status": "running",
-        "cache_size": len(CACHE)
+        "status": "running"
     }
 
 
 @app.get("/lookup")
 async def lookup(
-    username: str = Query(...),
+    q: str = Query(..., description="username OR chat_id"),
     key: str = Query(...)
 ):
     if key != API_KEY:
         raise HTTPException(401, "Invalid API key")
 
-    clean_username = username.split("=")[-1].lstrip("@").strip()
-
-    user_data = await resolve_user(clean_username)
-
-    ch = await channel_stats(clean_username)
-    if ch:
-        user_data["channel_stats"] = ch
+    data = await resolve_target(q)
 
     return {
         "ok": True,
-        "count": 1,
-        "results": {
-            clean_username: {
-                "ok": True,
-                "data": user_data
-            }
-        }
+        "query": q,
+        "data": data
     }
 
 
-# ================= RUN =================
+# ============ RUN ============
 if __name__ == "__main__":
     import uvicorn
-    print("[+] Telegram OSINT Ultimate API")
     uvicorn.run("main:app", host="0.0.0.0", port=10000)
