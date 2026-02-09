@@ -18,7 +18,7 @@ from telethon.tl.types import (
     UserStatusLastMonth,
 )
 
-# ================= ENV =================
+# ========== ENV ==========
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 STRING_SESSION = os.getenv("STRING_SESSION")
@@ -26,14 +26,14 @@ API_KEY = os.getenv("API_KEY")
 
 if not STRING_SESSION or not STRING_SESSION.startswith("1"):
     raise RuntimeError("INVALID STRING_SESSION")
-# =======================================
+# =========================
 
 CACHE = {}
 CACHE_TTL = 300
 client = None
 
 
-# ================= LIFESPAN =================
+# ========== LIFESPAN ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global client
@@ -50,13 +50,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Telegram OSINT Ultimate API",
-    version="FINAL-RICH-NO-LOSS",
+    title="Telegram OSINT A-Z Engine",
+    version="ALL-IN-ONE",
     lifespan=lifespan
 )
 
-
-# ================= HELPERS =================
+# ========== HELPERS ==========
 def parse_status(user):
     if isinstance(user.status, UserStatusOnline):
         return "online"
@@ -71,21 +70,41 @@ def parse_status(user):
     return "unknown"
 
 
-# ================= CORE RESOLVER =================
-async def resolve_any(target: str):
-    target = target.strip()
+async def resolve_from_dialogs(chat_id: int):
+    async for d in client.iter_dialogs():
+        e = d.entity
+        if hasattr(e, "id") and e.id == chat_id:
+            return e
+    return None
 
-    if target in CACHE:
-        ts, data = CACHE[target]
+
+# ========== CORE RESOLVER ==========
+async def resolve_any(q: str):
+    q = q.strip()
+
+    if q in CACHE:
+        ts, data = CACHE[q]
         if time.time() - ts < CACHE_TTL:
             return data
 
-    # -------- resolve by chat_id --------
-    if target.lstrip("-").isdigit():
-        entity = await client.get_entity(int(target))
-    else:
+    entity = None
+
+    # ---- chat_id ----
+    if q.lstrip("-").isdigit():
+        cid = int(q)
         try:
-            r = await client(ResolveUsernameRequest(target.lstrip("@")))
+            entity = await client.get_entity(cid)
+        except Exception:
+            entity = await resolve_from_dialogs(cid)
+            if not entity:
+                raise HTTPException(
+                    404,
+                    "ID not accessible (not public / not known in session)"
+                )
+    else:
+        # ---- username ----
+        try:
+            r = await client(ResolveUsernameRequest(q.lstrip("@")))
             if r.users:
                 entity = r.users[0]
             elif r.chats:
@@ -95,7 +114,7 @@ async def resolve_any(target: str):
         except (UsernameInvalidError, UsernameNotOccupiedError):
             raise HTTPException(404, "Username not found")
 
-    # ================= USER =================
+    # ========== USER ==========
     if isinstance(entity, User):
         full = await client(GetFullUserRequest(entity.id))
 
@@ -128,10 +147,9 @@ async def resolve_any(target: str):
             "dc_id": entity.photo.dc_id if entity.photo else None,
         }
 
-    # ================= CHANNEL / GROUP =================
+    # ========== CHANNEL / GROUP ==========
     elif isinstance(entity, Channel):
         full = await client(GetFullChannelRequest(entity))
-
         data = {
             "type": "channel",
             "channel_id": entity.id,
@@ -145,15 +163,15 @@ async def resolve_any(target: str):
     else:
         raise HTTPException(404, "Unsupported entity")
 
-    CACHE[target] = (time.time(), data)
+    CACHE[q] = (time.time(), data)
     return data
 
 
-# ================= API =================
+# ========== API ==========
 @app.get("/")
 async def root():
     return {
-        "service": "Telegram OSINT Ultimate API",
+        "service": "Telegram OSINT A-Z",
         "status": "running",
         "cache_size": len(CACHE)
     }
@@ -171,7 +189,7 @@ async def lookup(
 
     return {
         "ok": True,
-        "count": 1,
+        "query": q,
         "results": {
             q: {
                 "ok": True,
@@ -179,9 +197,3 @@ async def lookup(
             }
         }
     }
-
-
-# ================= RUN =================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=10000)
