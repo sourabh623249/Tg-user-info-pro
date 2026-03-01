@@ -20,8 +20,8 @@ from telethon.tl.types import (
 # ========== HARDCODED CREDENTIALS ==========
 API_ID = 27293496
 API_HASH = "d722d4a9b3a05b313f532762475a421b"
-BOT_TOKEN = "8120937724:AAHBugYjdjUGAL0AA5mRTfLbr81B6SGh1e0"
-API_KEY = "HACK" 
+BOT_TOKEN = "8676129284:AAFUa_GUUEno0SqImcOhAejyjhuQRbOLxL4"
+API_KEY = "HEYBRO1" 
 # ===========================================
 
 CACHE = {}
