@@ -21,7 +21,7 @@ from telethon.tl.types import (
 API_ID = 27293496
 API_HASH = "d722d4a9b3a05b313f532762475a421b"
 BOT_TOKEN = "8676129284:AAFUa_GUUEno0SqImcOhAejyjhuQRbOLxL4"
-API_KEY = "HEYBRO1" 
+API_KEY = "HEYBRO2" 
 # ===========================================
 
 CACHE = {}
